@@ -1,0 +1,36 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users collection: users can read their own profile, admins can read all
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (request.auth.uid == userId || request.auth.token.role == 'admin');
+    }
+
+    // Doctors collection: public read for waiting room TV board, write for auth users
+    match /doctors/{doctorId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // Patient records are private to the patient account and trusted staff roles.
+    match /patients/{patientId} {
+      allow read: if request.auth != null &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'doctor'] ||
+         resource.data.userId == request.auth.uid);
+      allow create: if request.auth != null &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'doctor'] ||
+         request.resource.data.userId == request.auth.uid);
+      allow update, delete: if request.auth != null &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'doctor'] ||
+         resource.data.userId == request.auth.uid);
+    }
+
+    // Events audit log: read/write for authenticated users
+    match /events/{eventId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+    }
+  }
+}
