@@ -75,16 +75,10 @@ export default function Landing() {
                 efficiently. A calmer waiting room starts here.
               </p>
               <div className="flex flex-col gap-3 sm:flex-row">
-                <Button size="lg" className="bg-medical-gradient text-base" asChild>
+                <Button size="lg" className="bg-medical-gradient text-base px-8" asChild>
                   <Link to="/login">
-                    <Clock className="mr-2 h-5 w-5" />
-                    Check Your Wait Time
-                  </Link>
-                </Button>
-                <Button size="lg" variant="outline" className="text-base" asChild>
-                  <Link to="/login">
-                    <Stethoscope className="mr-2 h-5 w-5" />
-                    Staff Login
+                    Login to QueueSense
+                    <ArrowRight className="ml-2 h-5 w-5" />
                   </Link>
                 </Button>
               </div>

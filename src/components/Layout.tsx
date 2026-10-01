@@ -42,7 +42,6 @@ export function Navbar() {
 
   const navItems = [
     { label: 'Dashboard', href: dashboardLink, icon: LayoutDashboard, show: !!user },
-    { label: 'Queue Display', href: '/queue-display', icon: Tv, show: true },
     { label: 'Reports', href: '/reports', icon: FileBarChart, show: user?.role === 'admin' },
   ];
 
@@ -82,20 +81,12 @@ export function Navbar() {
 
         <div className="flex items-center gap-2">
           {!user ? (
-            <>
-              <Button variant="ghost" size="sm" asChild className="hidden sm:flex">
-                <Link to="/login">
-                  <LogIn className="mr-1.5 h-4 w-4" />
-                  Staff Login
-                </Link>
-              </Button>
-              <Button size="sm" asChild className="bg-medical-gradient">
-                <Link to="/login">
-                  <UserIcon className="mr-1.5 h-4 w-4" />
-                  Check Wait Time
-                </Link>
-              </Button>
-            </>
+            <Button size="sm" asChild className="bg-medical-gradient px-4">
+              <Link to="/login">
+                <LogIn className="mr-1.5 h-4 w-4" />
+                Login
+              </Link>
+            </Button>
           ) : (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
