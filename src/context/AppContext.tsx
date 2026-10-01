@@ -37,7 +37,11 @@ interface AppContextValue {
     userId?: string
   ) => Patient;
   startConsultation: (doctorId: string, patientId: string) => void;
-  endConsultation: (doctorId: string, patientId: string) => void;
+  endConsultation: (
+    doctorId: string,
+    patientId: string,
+    report?: Omit<ConsultationReport, 'id' | 'patientId' | 'patientName' | 'doctorId' | 'doctorName' | 'department' | 'consultationDate' | 'durationMinutes'>
+  ) => void;
   markPatientNoShow: (patientId: string) => void;
   insertEmergencyPatient: (
     name: string,
@@ -164,22 +168,18 @@ function mapEventToDbEvent(e: QueueEvent) {
 }
 
 async function safeUpsertDoctors(docs: Doctor[]) {
-  if (!isSupabaseConfigured) return;
+  if (!isSupabaseConfigured || docs.length === 0) return;
   try {
-    for (const d of docs) {
-      await supabase.from('doctors').upsert(mapDoctorToDbDoctor(d));
-    }
+    await supabase.from('doctors').upsert(docs.map(mapDoctorToDbDoctor));
   } catch (err) {
     console.warn('Supabase upsert doctors error:', err);
   }
 }
 
 async function safeUpsertPatients(pats: Patient[]) {
-  if (!isSupabaseConfigured) return;
+  if (!isSupabaseConfigured || pats.length === 0) return;
   try {
-    for (const p of pats) {
-      await supabase.from('patients').upsert(mapPatientToDbPatient(p));
-    }
+    await supabase.from('patients').upsert(pats.map(mapPatientToDbPatient));
   } catch (err) {
     console.warn('Supabase upsert patients error:', err);
   }
@@ -242,10 +242,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         if (evtsRes.data && evtsRes.data.length > 0) {
           setEvents(evtsRes.data.map(mapDbEventToEvent));
-        } else {
-          for (const e of seedEvents) {
-            await safeUpsertEvent(e);
-          }
         }
       } catch (err) {
         console.warn('Supabase initial fetch warning:', err);
@@ -378,9 +374,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(updatedPatients, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
+      setPatients(finalPatients);
       safeUpsertPatients(finalPatients);
 
-      setPatients(finalPatients);
       logEvent(
         isEmergency ? 'emergency' : 'check_in',
         doctorId,
@@ -419,11 +415,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : p
       );
 
+      setDoctors(updatedDoctors);
+      setPatients(updatedPatients);
+
       safeUpsertDoctors(updatedDoctors);
       safeUpsertPatients(updatedPatients);
 
-      setDoctors(updatedDoctors);
-      setPatients(updatedPatients);
       logEvent('consult_start', doctorId, patientId);
 
       setTimeout(() => {
@@ -445,9 +442,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [doctors, patients, logEvent, pushNotification]
   );
 
-  // End consultation
+  // End consultation — complete patient and re-index queue instantly!
   const endConsultation = useCallback(
-    (doctorId: string, patientId: string) => {
+    (
+      doctorId: string,
+      patientId: string,
+      reportData?: Omit<ConsultationReport, 'id' | 'patientId' | 'patientName' | 'doctorId' | 'doctorName' | 'department' | 'consultationDate' | 'durationMinutes'>
+    ) => {
       const now = Date.now();
       const currentDoc = doctors.find((d) => d.id === doctorId);
       const duration =
@@ -474,26 +475,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const updatedPatients = patients.map((p) => {
         if (p.id !== patientId) return p;
         const earnedPoints = p.isOnTime ? 30 : 15;
+        let consultationReport = p.consultationReport;
+        if (reportData && currentDoc) {
+          const durationMinutes = Math.max(1, Math.round(duration / 60));
+          consultationReport = {
+            ...reportData,
+            id: genId('report'),
+            patientId,
+            patientName: p.name,
+            doctorId: currentDoc.id,
+            doctorName: currentDoc.name,
+            department: p.department,
+            consultationDate: now,
+            durationMinutes,
+          };
+        }
         return {
           ...p,
           status: 'completed' as const,
           completedAt: now,
+          queuePosition: -1,
+          estimatedWaitTime: 0,
           points: (p.points || 0) + earnedPoints,
           badges:
             p.isOnTime && !p.badges.includes('Punctual')
               ? [...p.badges, 'Punctual']
               : p.badges,
+          consultationReport,
         };
       });
 
       const reindexed = reindexQueue(updatedPatients, doctorId, now, updatedDoctors);
       const finalPatients = recalcAll(updatedDoctors, reindexed);
 
+      // Update local state immediately so UI updates instantaneously!
+      setDoctors(updatedDoctors);
+      setPatients(finalPatients);
+
+      // Sync with Supabase asynchronously
       safeUpsertDoctors(updatedDoctors);
       safeUpsertPatients(finalPatients);
 
-      setDoctors(updatedDoctors);
-      setPatients(finalPatients);
       logEvent('consult_end', doctorId, patientId, duration);
     },
     [doctors, patients, logEvent, recalcAll]
@@ -510,9 +532,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(updated, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
+      setPatients(finalPatients);
       safeUpsertPatients(finalPatients);
 
-      setPatients(finalPatients);
       logEvent('no_show', doctorId, patientId);
       pushNotification({
         type: 'info',
@@ -551,9 +573,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(withNew, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
+      setPatients(finalPatients);
       safeUpsertPatients(finalPatients);
 
-      setPatients(finalPatients);
       logEvent('emergency', doctorId, newPatient.id, undefined, `Emergency admission for ${name}`);
       pushNotification({
         type: 'emergency',
@@ -576,9 +598,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexedNew = reindexQueue(reindexedOld, newDoctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexedNew);
 
+      setPatients(finalPatients);
       safeUpsertPatients(finalPatients);
 
-      setPatients(finalPatients);
       logEvent('reassign', newDoctorId, patientId);
       pushNotification({
         type: 'wait_changed',
@@ -604,9 +626,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(updated, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
+      setPatients(finalPatients);
       safeUpsertPatients(finalPatients);
 
-      setPatients(finalPatients);
       const emergencyEnabled = !patient.isEmergency;
       logEvent(emergencyEnabled ? 'emergency' : 'emergency_revert', doctorId, patientId);
       pushNotification({
@@ -649,9 +671,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         p.id === patientId ? { ...p, consultationReport } : p
       );
 
-      safeUpsertPatients(updatedPatients);
-
       setPatients(updatedPatients);
+      safeUpsertPatients(updatedPatients);
     },
     [patients, doctors]
   );
@@ -680,9 +701,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : p
       );
 
+      setPatients(updatedPatients);
       safeUpsertPatients(updatedPatients);
 
-      setPatients(updatedPatients);
       logEvent('reward_redeem', patient.assignedDoctorId, patientId, undefined, `Redeemed ${rewardName} for ${rewardCost} pts`);
       pushNotification({
         type: 'info',
@@ -737,6 +758,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 export function useApp() {
   const ctx = useContext(AppContext);
-  if (!ctx) throw new Error('useApp must be used within AppProvider');
+  if (!ctx) throw new Error('useApp must be used within AuthProvider');
   return ctx;
 }

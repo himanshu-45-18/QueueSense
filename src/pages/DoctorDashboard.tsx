@@ -11,6 +11,8 @@ import {
   TrendingUp,
   Activity,
   CheckCircle,
+  FileText,
+  UserPlus,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
@@ -35,14 +37,17 @@ export default function DoctorDashboard() {
   const {
     doctors,
     patients,
+    checkInPatient,
     startConsultation,
     endConsultation,
     markPatientNoShow,
     insertEmergencyPatient,
-    saveConsultationReport,
   } = useApp();
   const navigate = useNavigate();
   const [now, setNow] = useState(Date.now());
+  const [walkInDialog, setWalkInDialog] = useState(false);
+  const [walkInName, setWalkInName] = useState('');
+  const [walkInSymptoms, setWalkInSymptoms] = useState('');
   const [emergencyDialog, setEmergencyDialog] = useState(false);
   const [emergencyName, setEmergencyName] = useState('');
   const [emergencyDept, setEmergencyDept] = useState('');
@@ -65,10 +70,11 @@ export default function DoctorDashboard() {
       const found = doctors.find((d) => d.id === user.linkedDoctorId);
       if (found) return found;
     }
-    const nameMatch = doctors.find(
-      (d) => d.name.toLowerCase().includes(user?.name.toLowerCase() || '')
-    );
-    if (nameMatch) return nameMatch;
+    if (user?.email) {
+      const prefix = user.email.split('@')[0].toLowerCase();
+      const match = doctors.find((d) => d.name.toLowerCase().includes(prefix));
+      if (match) return match;
+    }
     return doctors[0] || null;
   }, [doctors, user]);
 
@@ -122,6 +128,20 @@ export default function DoctorDashboard() {
     );
   }
 
+  const handleWalkInCheckIn = () => {
+    if (!walkInName.trim()) return;
+    checkInPatient(
+      walkInName.trim(),
+      doctor.department,
+      true,
+      walkInSymptoms.trim(),
+      doctor.id
+    );
+    setWalkInName('');
+    setWalkInSymptoms('');
+    setWalkInDialog(false);
+  };
+
   const handleEmergency = () => {
     if (!emergencyName.trim()) return;
     insertEmergencyPatient(
@@ -134,22 +154,33 @@ export default function DoctorDashboard() {
     setEmergencyDialog(false);
   };
 
-  const handleEndConsultation = () => {
-    if (!currentPatient) return;
+  // Immediate 1-click End Consultation
+  const handleDirectEndConsultation = () => {
+    if (!currentPatient || !doctor) return;
     endConsultation(doctor.id, currentPatient.id);
-    saveConsultationReport(currentPatient.id, {
-      symptoms: currentPatient.symptoms || '',
-      diagnosis,
-      clinicalNotes,
-      prescriptions: medicines.trim()
-        ? medicines.split(',').map((name) => ({
-            name: name.trim(),
-            dosage: 'As directed',
-            frequency: 'As directed',
-            duration: 'As directed',
-          }))
-        : [],
-    });
+  };
+
+  // End Consultation with Clinical Report
+  const handleSaveReportAndEnd = () => {
+    if (!currentPatient || !doctor) return;
+    const targetPatientId = currentPatient.id;
+    const reportData = (diagnosis || clinicalNotes || medicines)
+      ? {
+          symptoms: currentPatient.symptoms || '',
+          diagnosis,
+          clinicalNotes,
+          prescriptions: medicines.trim()
+            ? medicines.split(',').map((name) => ({
+                name: name.trim(),
+                dosage: 'As directed',
+                frequency: 'As directed',
+                duration: 'As directed',
+              }))
+            : [],
+        }
+      : undefined;
+
+    endConsultation(doctor.id, targetPatientId, reportData);
     setDiagnosis('');
     setClinicalNotes('');
     setMedicines('');
@@ -157,7 +188,7 @@ export default function DoctorDashboard() {
   };
 
   const elapsedConsult = currentPatient && doctor.currentConsultStartedAt
-    ? Math.round((now - doctor.currentConsultStartedAt) / 1000)
+    ? Math.max(0, Math.round((now - doctor.currentConsultStartedAt) / 1000))
     : 0;
 
   return (
@@ -171,10 +202,10 @@ export default function DoctorDashboard() {
           <p className="text-sm text-muted-foreground">
             {doctor.department} ·{' '}
             <Badge
-              variant={doctor.status === 'in_consult' ? 'default' : 'secondary'}
+              variant={currentPatient ? 'default' : 'secondary'}
               className="ml-1"
             >
-              {doctor.status === 'in_consult'
+              {currentPatient
                 ? 'In Consultation'
                 : doctor.status === 'on_break'
                 ? 'On Break'
@@ -183,6 +214,15 @@ export default function DoctorDashboard() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setWalkInDialog(true)}
+            className="border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+          >
+            <UserPlus className="mr-1.5 h-4 w-4" />
+            Add Patient to Queue
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -243,13 +283,13 @@ export default function DoctorDashboard() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* Current Patient */}
+        {/* Main Column */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Current Consultation */}
+          {/* Active Consultation Card */}
           <Card
             className={
               currentPatient
-                ? 'border-medical-success/30 shadow-lg'
+                ? 'border-medical-success/40 shadow-lg bg-medical-success/5'
                 : 'border-border/60'
             }
           >
@@ -260,25 +300,24 @@ export default function DoctorDashboard() {
               </CardTitle>
               <CardDescription>
                 {currentPatient
-                  ? 'Patient currently being seen'
+                  ? 'Patient currently in doctor\'s room'
                   : 'No active consultation'}
               </CardDescription>
             </CardHeader>
             <CardContent>
               {currentPatient ? (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between rounded-xl bg-medical-success/5 p-4">
+                  <div className="flex items-center justify-between rounded-xl bg-card border border-border p-4 shadow-sm">
                     <div className="flex items-center gap-3">
                       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-medical-success/10">
                         <span className="text-lg font-bold text-medical-success">
                           {currentPatient.name[0]}
                         </span>
                       </div>
-                        <div>
-                        <p className="font-semibold">{currentPatient.name}</p>
+                      <div>
+                        <p className="font-semibold text-lg">{currentPatient.name}</p>
                         <p className="text-sm text-muted-foreground">
-                          {currentPatient.department} · Token #
-                          {currentPatient.queuePosition + 1}
+                          {currentPatient.department} · In Room
                         </p>
                         {currentPatient.symptoms && (
                           <p className="mt-1 text-xs text-primary font-medium">
@@ -294,36 +333,43 @@ export default function DoctorDashboard() {
                       )}
                     </div>
                     <div className="text-right">
-                      <p className="text-2xl font-bold text-medical-success">
+                      <p className="text-3xl font-extrabold text-medical-success font-mono">
                         {formatDuration(elapsedConsult)}
                       </p>
-                      <p className="text-xs text-muted-foreground">Elapsed</p>
+                      <p className="text-xs text-muted-foreground">Consultation Time</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
                     <Button
-                      onClick={() => setReportDialog(true)}
-                      className="flex-1 bg-medical-gradient"
+                      onClick={handleDirectEndConsultation}
+                      className="flex-1 bg-medical-gradient py-6 text-base"
                     >
-                      <Square className="mr-2 h-4 w-4" />
+                      <Square className="mr-2 h-5 w-5" />
                       End Consultation
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setReportDialog(true)}
+                      className="border-primary text-primary hover:bg-primary/10 py-6"
+                    >
+                      <FileText className="mr-2 h-4 w-4" />
+                      Add Prescription & End
                     </Button>
                   </div>
                 </div>
               ) : upcomingPatients.length > 0 ? (
                 <div className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    Your next patient is ready. Start the consultation to begin
-                    tracking time.
+                  <p className="text-sm font-medium text-foreground">
+                    Next patient is waiting. Click <span className="font-bold text-primary">Start Consultation</span> to call them in.
                   </p>
-                  <div className="flex items-center gap-3 rounded-xl border border-border p-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                  <div className="flex items-center gap-3 rounded-xl border border-primary/40 bg-primary/5 p-4">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/20">
                       <span className="text-lg font-bold text-primary">
                         {upcomingPatients[0].name[0]}
                       </span>
                     </div>
                     <div className="flex-1">
-                      <p className="font-semibold">
+                      <p className="font-semibold text-base">
                         {upcomingPatients[0].name}
                         {upcomingPatients[0].isEmergency && (
                           <Badge variant="destructive" className="ml-2">
@@ -332,8 +378,7 @@ export default function DoctorDashboard() {
                         )}
                       </p>
                       <p className="text-sm text-muted-foreground">
-                        {upcomingPatients[0].department} · Waiting since{' '}
-                        {formatTime(upcomingPatients[0].checkInTime)}
+                        {upcomingPatients[0].department} · Checked in {formatTime(upcomingPatients[0].checkInTime)}
                       </p>
                       {upcomingPatients[0].symptoms && (
                         <p className="mt-0.5 text-xs text-primary font-medium">
@@ -345,19 +390,28 @@ export default function DoctorDashboard() {
                       onClick={() =>
                         startConsultation(doctor.id, upcomingPatients[0].id)
                       }
-                      className="bg-medical-gradient"
+                      className="bg-medical-gradient px-6 py-5 text-base shadow-md"
                     >
-                      <Play className="mr-2 h-4 w-4" />
-                      Start
+                      <Play className="mr-2 h-5 w-5" />
+                      Start Consultation
                     </Button>
                   </div>
                 </div>
               ) : (
                 <div className="flex flex-col items-center py-8 text-center">
                   <Activity className="mb-3 h-10 w-10 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">
-                    No patients in queue. New check-ins will appear here.
+                  <p className="text-sm text-muted-foreground mb-3">
+                    No patients in queue. New patient check-ins will appear here automatically.
                   </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setWalkInDialog(true)}
+                    className="border-primary/40 text-primary hover:bg-primary/10"
+                  >
+                    <UserPlus className="mr-1.5 h-4 w-4" />
+                    Check in Walk-In Patient
+                  </Button>
                 </div>
               )}
             </CardContent>
@@ -368,7 +422,7 @@ export default function DoctorDashboard() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Users className="h-5 w-5 text-primary" />
-                Upcoming Queue
+                Waiting Patients Queue
                 <Badge variant="secondary" className="ml-1">
                   {upcomingPatients.length}
                 </Badge>
@@ -388,7 +442,7 @@ export default function DoctorDashboard() {
                         key={p.id}
                         className={`flex items-center gap-3 rounded-xl border p-3 transition-smooth hover:bg-muted/50 ${
                           idx === 0 && !currentPatient
-                            ? 'border-primary/30 bg-primary/5'
+                            ? 'border-primary/40 bg-primary/5 shadow-sm'
                             : 'border-border'
                         }`}
                       >
@@ -402,7 +456,7 @@ export default function DoctorDashboard() {
                           {p.isEmergency ? (
                             <AlertTriangle className="h-4 w-4" />
                           ) : (
-                            p.queuePosition + 1
+                            idx + 1
                           )}
                         </div>
                         <div className="flex-1">
@@ -415,7 +469,7 @@ export default function DoctorDashboard() {
                             )}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {p.department} · Since {formatTime(p.checkInTime)}
+                            {p.department} · Checked in {formatTime(p.checkInTime)}
                           </p>
                           {p.symptoms && (
                             <p className="text-[11px] text-muted-foreground truncate max-w-xs">
@@ -429,14 +483,25 @@ export default function DoctorDashboard() {
                           </p>
                           <p className="text-xs text-muted-foreground">est. wait</p>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:bg-destructive/10"
-                          onClick={() => markPatientNoShow(p.id)}
-                        >
-                          <UserX className="h-4 w-4" />
-                        </Button>
+                        {!currentPatient && idx === 0 ? (
+                          <Button
+                            size="sm"
+                            className="bg-medical-gradient"
+                            onClick={() => startConsultation(doctor.id, p.id)}
+                          >
+                            <Play className="mr-1 h-3.5 w-3.5" />
+                            Start
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:bg-destructive/10"
+                            onClick={() => markPatientNoShow(p.id)}
+                          >
+                            <UserX className="h-4 w-4" />
+                          </Button>
+                        )}
                       </div>
                     );
                   })}
@@ -460,19 +525,17 @@ export default function DoctorDashboard() {
                   <span className="text-lg font-normal"> min</span>
                 </p>
                 <p className="mt-1 text-xs text-white/70">
-                  Based on exponential moving average
+                  Calculated automatically per consultation
                 </p>
               </div>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Total consults</span>
-                  <span className="font-semibold">{doctor.totalConsults}</span>
+                  <span className="text-muted-foreground">Completed today</span>
+                  <span className="font-semibold">{completedToday}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Current EMA</span>
-                  <span className="font-semibold">
-                    {doctor.currentAvgConsultTime}s
-                  </span>
+                  <span className="text-muted-foreground">Total consults</span>
+                  <span className="font-semibold">{doctor.totalConsults}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Queue length</span>
@@ -490,6 +553,14 @@ export default function DoctorDashboard() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
+                onClick={() => setWalkInDialog(true)}
+              >
+                <UserPlus className="mr-2 h-4 w-4 text-primary" />
+                Add Patient to Queue
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full justify-start"
                 onClick={() => setEmergencyDialog(true)}
               >
                 <AlertTriangle className="mr-2 h-4 w-4 text-destructive" />
@@ -498,46 +569,91 @@ export default function DoctorDashboard() {
               <Button
                 variant="outline"
                 className="w-full justify-start"
-                onClick={() => navigate('/queue-display')}
+                onClick={() => navigate('/reports')}
               >
-                <Activity className="mr-2 h-4 w-4 text-primary" />
-                View Public Display
+                <FileText className="mr-2 h-4 w-4 text-primary" />
+                View Patient Reports
               </Button>
             </CardContent>
           </Card>
         </div>
       </div>
 
-      {/* Emergency Dialog */}
+      {/* Quick Walk-In Check-In Dialog */}
+      <Dialog open={walkInDialog} onOpenChange={setWalkInDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Patient to Doctor's Queue</DialogTitle>
+            <DialogDescription>
+              Directly check in a patient for {doctor.name} ({doctor.department}).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="walkin-name">Patient Name</Label>
+              <Input
+                id="walkin-name"
+                placeholder="e.g. Rahul Sharma"
+                value={walkInName}
+                onChange={(e) => setWalkInName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="walkin-symptoms">Symptoms (optional)</Label>
+              <Input
+                id="walkin-symptoms"
+                placeholder="e.g. Chest pain, breathlessness, routine consultation"
+                value={walkInSymptoms}
+                onChange={(e) => setWalkInSymptoms(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWalkInDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              className="bg-medical-gradient"
+              onClick={handleWalkInCheckIn}
+              disabled={!walkInName.trim()}
+            >
+              Add to Queue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Optional Report Dialog */}
       <Dialog open={reportDialog} onOpenChange={setReportDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Complete Consultation Report</DialogTitle>
+            <DialogTitle>Add Clinical Report (Optional)</DialogTitle>
             <DialogDescription>
-              Save the clinical summary before ending this consultation.
+              Add prescription notes before finishing the consultation.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="diagnosis">Diagnosis</Label>
-              <Input id="diagnosis" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} placeholder="Enter diagnosis" />
+              <Input id="diagnosis" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} placeholder="Enter diagnosis (e.g. Mild Hypertension)" />
             </div>
             <div className="space-y-2">
               <Label htmlFor="clinical-notes">Clinical Notes</Label>
               <Input id="clinical-notes" value={clinicalNotes} onChange={(e) => setClinicalNotes(e.target.value)} placeholder="Treatment notes and observations" />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="medicines">Medicines</Label>
-              <Input id="medicines" value={medicines} onChange={(e) => setMedicines(e.target.value)} placeholder="Comma-separated medicine names" />
+              <Label htmlFor="medicines">Medicines / Prescription</Label>
+              <Input id="medicines" value={medicines} onChange={(e) => setMedicines(e.target.value)} placeholder="Comma-separated (e.g. Paracetamol 500mg, Amoxicillin)" />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setReportDialog(false)}>Cancel</Button>
-            <Button className="bg-medical-gradient" onClick={handleEndConsultation}>Save & End Consultation</Button>
+            <Button className="bg-medical-gradient" onClick={handleSaveReportAndEnd}>Save & End Consultation</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* Emergency Dialog */}
       <Dialog open={emergencyDialog} onOpenChange={setEmergencyDialog}>
         <DialogContent>
           <DialogHeader>
