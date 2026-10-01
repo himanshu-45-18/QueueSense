@@ -145,12 +145,12 @@ export default function Login() {
   // Quick Demo Autofill
   const fillDemo = (demoRole: Role) => {
     const emails: Record<Role, string> = {
-      patient: 'patient@demo.com',
-      doctor: 'doctor@demo.com',
-      admin: 'admin@demo.com',
+      patient: 'patient@gmail.com',
+      doctor: 'himanshu@gmail.com',
+      admin: 'admin@gmail.com',
     };
     setEmail(emails[demoRole]);
-    setPassword('demo123');
+    setPassword('123456');
     setRole(demoRole);
     setAuthMethod('email');
     setMode('login');

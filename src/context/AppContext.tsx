@@ -6,17 +6,7 @@ import {
   useCallback,
   type ReactNode,
 } from 'react';
-import {
-  collection,
-  onSnapshot,
-  doc,
-  setDoc,
-  updateDoc,
-  writeBatch,
-  query,
-  where,
-} from 'firebase/firestore';
-import { db, isFirebaseConfigured } from '../lib/firebase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { ConsultationReport, Doctor, Patient, QueueEvent, QueueEventType, TriageUrgency } from '../lib/types';
 import { useAuth } from './AuthContext';
 import { seedDoctors, seedPatients, seedEvents } from '../lib/mockData';
@@ -76,13 +66,141 @@ export interface AppNotification {
   timestamp: number;
 }
 
+// Database mapper helpers
+function mapDbDoctorToDoctor(d: any): Doctor {
+  return {
+    id: d.id,
+    name: d.name,
+    department: d.department,
+    currentAvgConsultTime: Number(d.current_avg_consult_time || 900),
+    status: d.status || 'available',
+    currentConsultStartedAt: d.current_consult_started_at ? Number(d.current_consult_started_at) : null,
+    totalConsults: Number(d.total_consults || 0),
+    totalConsultDuration: Number(d.total_consult_duration || 0),
+  };
+}
+
+function mapDoctorToDbDoctor(d: Doctor) {
+  return {
+    id: d.id,
+    name: d.name,
+    department: d.department,
+    current_avg_consult_time: d.currentAvgConsultTime,
+    status: d.status,
+    current_consult_started_at: d.currentConsultStartedAt,
+    total_consults: d.totalConsults,
+    total_consult_duration: d.totalConsultDuration,
+  };
+}
+
+function mapDbPatientToPatient(p: any): Patient {
+  return {
+    id: p.id,
+    userId: p.user_id || null,
+    name: p.name,
+    department: p.department,
+    symptoms: p.symptoms || '',
+    triageUrgency: p.triage_urgency || 'routine',
+    checkInTime: Number(p.check_in_time || Date.now()),
+    status: p.status || 'waiting',
+    assignedDoctorId: p.assigned_doctor_id || null,
+    queuePosition: Number(p.queue_position || 0),
+    estimatedWaitTime: Number(p.estimated_wait_time || 0),
+    points: Number(p.points || 0),
+    badges: p.badges || [],
+    redeemedRewards: p.redeemed_rewards || [],
+    isEmergency: Boolean(p.is_emergency),
+    isOnTime: Boolean(p.is_on_time),
+    completedAt: p.completed_at ? Number(p.completed_at) : null,
+    consultationReport: p.consultation_report || undefined,
+  };
+}
+
+function mapPatientToDbPatient(p: Patient) {
+  return {
+    id: p.id,
+    user_id: p.userId || null,
+    name: p.name,
+    department: p.department,
+    symptoms: p.symptoms || '',
+    triage_urgency: p.triageUrgency || 'routine',
+    check_in_time: p.checkInTime,
+    status: p.status,
+    assigned_doctor_id: p.assignedDoctorId || null,
+    queue_position: p.queuePosition,
+    estimated_wait_time: p.estimatedWaitTime,
+    points: p.points,
+    badges: p.badges || [],
+    redeemed_rewards: p.redeemedRewards || [],
+    is_emergency: p.isEmergency,
+    is_on_time: p.isOnTime,
+    completed_at: p.completedAt,
+    consultation_report: p.consultationReport || null,
+  };
+}
+
+function mapDbEventToEvent(e: any): QueueEvent {
+  return {
+    id: e.id,
+    type: e.type,
+    doctorId: e.doctor_id || null,
+    patientId: e.patient_id || null,
+    timestamp: Number(e.timestamp || Date.now()),
+    duration: e.duration ? Number(e.duration) : undefined,
+    details: e.details || undefined,
+  };
+}
+
+function mapEventToDbEvent(e: QueueEvent) {
+  return {
+    id: e.id,
+    type: e.type,
+    doctor_id: e.doctorId || null,
+    patient_id: e.patientId || null,
+    timestamp: e.timestamp,
+    duration: e.duration || null,
+    details: e.details || null,
+  };
+}
+
+async function safeUpsertDoctors(docs: Doctor[]) {
+  if (!isSupabaseConfigured) return;
+  try {
+    for (const d of docs) {
+      await supabase.from('doctors').upsert(mapDoctorToDbDoctor(d));
+    }
+  } catch (err) {
+    console.warn('Supabase upsert doctors error:', err);
+  }
+}
+
+async function safeUpsertPatients(pats: Patient[]) {
+  if (!isSupabaseConfigured) return;
+  try {
+    for (const p of pats) {
+      await supabase.from('patients').upsert(mapPatientToDbPatient(p));
+    }
+  } catch (err) {
+    console.warn('Supabase upsert patients error:', err);
+  }
+}
+
+async function safeUpsertEvent(e: QueueEvent) {
+  if (!isSupabaseConfigured) return;
+  try {
+    await supabase.from('events').upsert(mapEventToDbEvent(e));
+  } catch (err) {
+    console.warn('Supabase upsert event error:', err);
+  }
+}
+
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const [doctors, setDoctors] = useState<Doctor[]>(isFirebaseConfigured ? [] : seedDoctors);
-  const [patients, setPatients] = useState<Patient[]>(isFirebaseConfigured ? [] : seedPatients);
-  const [events, setEvents] = useState<QueueEvent[]>(isFirebaseConfigured ? [] : seedEvents);
+  const [doctors, setDoctors] = useState<Doctor[]>(seedDoctors);
+  const [patients, setPatients] = useState<Patient[]>(seedPatients);
+  const [events, setEvents] = useState<QueueEvent[]>(seedEvents);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
   const pushNotification = useCallback((n: Omit<AppNotification, 'id'>) => {
@@ -94,48 +212,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
-  // Firebase Firestore Real-Time Subscriptions and Auto-Seeding
+  // Supabase Data Initialization & Realtime Subscription
   useEffect(() => {
-    if (!isFirebaseConfigured) return;
+    if (!isSupabaseConfigured) return;
 
-    // Listen to live real-time updates from Firestore
-    const unsubDoctors = onSnapshot(
-      collection(db, 'doctors'),
-      (snapshot) => {
-        const docsData: Doctor[] = snapshot.docs.map((d) => d.data() as Doctor);
-        setDoctors(docsData);
-      },
-      (err) => console.warn('Firestore doctors listener:', err)
-    );
+    let isSubscribed = true;
 
-    const patientCollection = user?.role === 'patient' && user.id
-      ? query(collection(db, 'patients'), where('userId', '==', user.id))
-      : collection(db, 'patients');
+    const fetchAllData = async () => {
+      try {
+        const [docsRes, patsRes, evtsRes] = await Promise.all([
+          supabase.from('doctors').select('*'),
+          supabase.from('patients').select('*'),
+          supabase.from('events').select('*'),
+        ]);
 
-    const unsubPatients = onSnapshot(
-      patientCollection,
-      (snapshot) => {
-        const patsData: Patient[] = snapshot.docs.map((p) => p.data() as Patient);
-        setPatients(patsData);
-      },
-      (err) => console.warn('Firestore patients listener:', err)
-    );
+        if (!isSubscribed) return;
 
-    const unsubEvents = onSnapshot(
-      collection(db, 'events'),
-      (snapshot) => {
-        const evtsData: QueueEvent[] = snapshot.docs.map((e) => e.data() as QueueEvent);
-        setEvents(evtsData);
-      },
-      (err) => console.warn('Firestore events listener:', err)
-    );
+        if (docsRes.data && docsRes.data.length > 0) {
+          setDoctors(docsRes.data.map(mapDbDoctorToDoctor));
+        } else {
+          await safeUpsertDoctors(seedDoctors);
+        }
+
+        if (patsRes.data && patsRes.data.length > 0) {
+          setPatients(patsRes.data.map(mapDbPatientToPatient));
+        } else {
+          await safeUpsertPatients(seedPatients);
+        }
+
+        if (evtsRes.data && evtsRes.data.length > 0) {
+          setEvents(evtsRes.data.map(mapDbEventToEvent));
+        } else {
+          for (const e of seedEvents) {
+            await safeUpsertEvent(e);
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase initial fetch warning:', err);
+      }
+    };
+
+    fetchAllData();
+
+    // Supabase Realtime Channel
+    const channel = supabase
+      .channel('queuesense-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'doctors' },
+        async () => {
+          const res = await supabase.from('doctors').select('*');
+          if (res.data && isSubscribed) setDoctors(res.data.map(mapDbDoctorToDoctor));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'patients' },
+        async () => {
+          const res = await supabase.from('patients').select('*');
+          if (res.data && isSubscribed) setPatients(res.data.map(mapDbPatientToPatient));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'events' },
+        async () => {
+          const res = await supabase.from('events').select('*');
+          if (res.data && isSubscribed) setEvents(res.data.map(mapDbEventToEvent));
+        }
+      )
+      .subscribe();
 
     return () => {
-      unsubDoctors();
-      unsubPatients();
-      unsubEvents();
+      isSubscribed = false;
+      supabase.removeChannel(channel);
     };
-  }, [user]);
+  }, []);
 
   const logEvent = useCallback(
     (
@@ -155,12 +307,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         details,
       };
 
-      if (isFirebaseConfigured) {
-        setDoc(doc(db, 'events', evt.id), evt).catch((err) =>
-          console.warn('Error saving event to Firestore:', err)
-        );
-      }
-
+      safeUpsertEvent(evt);
       setEvents((prev) => [...prev, evt]);
     },
     []
@@ -184,7 +331,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       isEmergencyOverride?: boolean,
       userId?: string
     ): Patient => {
-      // Analyze symptoms if provided
       const triage = symptoms
         ? analyzeSymptoms(symptoms, doctors, patients)
         : null;
@@ -207,7 +353,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const newPatient: Patient = {
         id: genId('pat'),
-        userId: userId || null,
+        userId: userId || user?.id || null,
         name,
         department: dept,
         symptoms: symptoms || '',
@@ -217,7 +363,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         assignedDoctorId: doctorId,
         queuePosition: isEmergency ? 1 : 0,
         estimatedWaitTime: 0,
-        points: isOnTime ? 20 : 0, // Real gamification starting from 0, +20 for on-time arrival!
+        points: isOnTime ? 20 : 0,
         badges: isOnTime ? ['Punctual'] : [],
         isEmergency,
         isOnTime,
@@ -232,13 +378,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(updatedPatients, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
-      if (isFirebaseConfigured) {
-        const batch = writeBatch(db);
-        finalPatients.forEach((p) => {
-          batch.set(doc(db, 'patients', p.id), p);
-        });
-        batch.commit().catch((err) => console.warn('Firestore check-in error:', err));
-      }
+      safeUpsertPatients(finalPatients);
 
       setPatients(finalPatients);
       logEvent(
@@ -259,7 +399,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       return newPatient;
     },
-    [doctors, patients, logEvent, pushNotification, recalcAll]
+    [doctors, patients, user, logEvent, pushNotification, recalcAll]
   );
 
   // Start consultation
@@ -279,24 +419,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : p
       );
 
-      if (isFirebaseConfigured) {
-        const docRef = doc(db, 'doctors', doctorId);
-        const patRef = doc(db, 'patients', patientId);
-        updateDoc(docRef, { status: 'in_consult', currentConsultStartedAt: now }).catch((e) =>
-          console.warn(e)
-        );
-        updateDoc(patRef, {
-          status: 'in_consult',
-          queuePosition: 0,
-          estimatedWaitTime: 0,
-        }).catch((e) => console.warn(e));
-      }
+      safeUpsertDoctors(updatedDoctors);
+      safeUpsertPatients(updatedPatients);
 
       setDoctors(updatedDoctors);
       setPatients(updatedPatients);
       logEvent('consult_start', doctorId, patientId);
 
-      // Notify next patient in line
       setTimeout(() => {
         const next = patients.find(
           (p) =>
@@ -316,7 +445,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [doctors, patients, logEvent, pushNotification]
   );
 
-  // End consultation — awards completion points and updates EMA
+  // End consultation
   const endConsultation = useCallback(
     (doctorId: string, patientId: string) => {
       const now = Date.now();
@@ -360,16 +489,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(updatedPatients, doctorId, now, updatedDoctors);
       const finalPatients = recalcAll(updatedDoctors, reindexed);
 
-      if (isFirebaseConfigured) {
-        const batch = writeBatch(db);
-        updatedDoctors.forEach((d) => {
-          batch.set(doc(db, 'doctors', d.id), d);
-        });
-        finalPatients.forEach((p) => {
-          batch.set(doc(db, 'patients', p.id), p);
-        });
-        batch.commit().catch((err) => console.warn('Firestore end consult error:', err));
-      }
+      safeUpsertDoctors(updatedDoctors);
+      safeUpsertPatients(finalPatients);
 
       setDoctors(updatedDoctors);
       setPatients(finalPatients);
@@ -389,13 +510,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(updated, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
-      if (isFirebaseConfigured) {
-        const batch = writeBatch(db);
-        finalPatients.forEach((p) => {
-          batch.set(doc(db, 'patients', p.id), p);
-        });
-        batch.commit().catch((err) => console.warn('Firestore mark no-show error:', err));
-      }
+      safeUpsertPatients(finalPatients);
 
       setPatients(finalPatients);
       logEvent('no_show', doctorId, patientId);
@@ -413,6 +528,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (name: string, department: string, doctorId: string, symptoms?: string) => {
       const newPatient: Patient = {
         id: genId('pat'),
+        userId: user?.id || null,
         name,
         department,
         symptoms: symptoms || 'Emergency triage admission',
@@ -435,15 +551,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexed = reindexQueue(withNew, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
-      if (isFirebaseConfigured) {
-        const batch = writeBatch(db);
-        finalPatients.forEach((p) => {
-          batch.set(doc(db, 'patients', p.id), p);
-        });
-        batch.commit().catch((err) =>
-          console.warn('Firestore insert emergency error:', err)
-        );
-      }
+      safeUpsertPatients(finalPatients);
 
       setPatients(finalPatients);
       logEvent('emergency', doctorId, newPatient.id, undefined, `Emergency admission for ${name}`);
@@ -453,10 +561,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         timestamp: Date.now(),
       });
     },
-    [doctors, patients, logEvent, pushNotification, recalcAll]
+    [doctors, patients, user, logEvent, pushNotification, recalcAll]
   );
 
-  // Reassign patient to different doctor
+  // Reassign patient
   const reassignPatientToDoctor = useCallback(
     (patientId: string, newDoctorId: string) => {
       const patient = patients.find((p) => p.id === patientId);
@@ -468,13 +576,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const reindexedNew = reindexQueue(reindexedOld, newDoctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexedNew);
 
-      if (isFirebaseConfigured) {
-        const batch = writeBatch(db);
-        finalPatients.forEach((p) => {
-          batch.set(doc(db, 'patients', p.id), p);
-        });
-        batch.commit().catch((err) => console.warn('Firestore reassign error:', err));
-      }
+      safeUpsertPatients(finalPatients);
 
       setPatients(finalPatients);
       logEvent('reassign', newDoctorId, patientId);
@@ -487,7 +589,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [patients, doctors, logEvent, pushNotification, recalcAll]
   );
 
-  // Emergency override
+  // Trigger emergency override
   const triggerEmergencyOverride = useCallback(
     (patientId: string) => {
       const patient = patients.find((p) => p.id === patientId);
@@ -496,21 +598,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const updated = patients.map((p) =>
         p.id === patientId
-          ? { ...p, isEmergency: !p.isEmergency, triageUrgency: !p.isEmergency ? 'emergency' as const : 'routine' as const }
+          ? { ...p, isEmergency: !p.isEmergency, triageUrgency: !p.isEmergency ? ('emergency' as const) : ('routine' as const) }
           : p
       );
       const reindexed = reindexQueue(updated, doctorId, Date.now(), doctors);
       const finalPatients = recalcAll(doctors, reindexed);
 
-      if (isFirebaseConfigured) {
-        const batch = writeBatch(db);
-        finalPatients.forEach((p) => {
-          batch.set(doc(db, 'patients', p.id), p);
-        });
-        batch.commit().catch((err) =>
-          console.warn('Firestore emergency override error:', err)
-        );
-      }
+      safeUpsertPatients(finalPatients);
 
       setPatients(finalPatients);
       const emergencyEnabled = !patient.isEmergency;
@@ -538,6 +632,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const durationMinutes = doctor.currentConsultStartedAt
         ? Math.max(1, Math.round((Date.now() - doctor.currentConsultStartedAt) / 60000))
         : Math.max(1, Math.round(doctor.currentAvgConsultTime / 60));
+
       const consultationReport: ConsultationReport = {
         ...report,
         id: genId('report'),
@@ -549,22 +644,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         consultationDate: patient.completedAt || Date.now(),
         durationMinutes,
       };
+
       const updatedPatients = patients.map((p) =>
         p.id === patientId ? { ...p, consultationReport } : p
       );
-      if (isFirebaseConfigured) {
-        updateDoc(doc(db, 'patients', patientId), { consultationReport }).catch((err) =>
-          console.warn('Firestore report save error:', err)
-        );
-      }
-      setPatients((currentPatients) =>
-        currentPatients.map((p) => p.id === patientId ? { ...p, consultationReport } : p)
-      );
+
+      safeUpsertPatients(updatedPatients);
+
+      setPatients(updatedPatients);
     },
     [patients, doctors]
   );
 
-  // Gamification: Redeem Points for Real Rewards
   const redeemReward = useCallback(
     (patientId: string, rewardCost: number, rewardName: string): boolean => {
       const patient = patients.find((p) => p.id === patientId);
@@ -589,12 +680,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           : p
       );
 
-      if (isFirebaseConfigured) {
-        updateDoc(doc(db, 'patients', patientId), {
-          points: updatedPoints,
-          redeemedRewards: [...(patient.redeemedRewards || []), redemption],
-        }).catch((err) => console.warn('Firestore reward redemption error:', err));
-      }
+      safeUpsertPatients(updatedPatients);
 
       setPatients(updatedPatients);
       logEvent('reward_redeem', patient.assignedDoctorId, patientId, undefined, `Redeemed ${rewardName} for ${rewardCost} pts`);
@@ -620,7 +706,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const visiblePatients = user?.role === 'patient'
-    ? patients.filter((patient) => patient.userId === user.id)
+    ? patients.filter((patient) => !patient.userId || patient.userId === user.id || user.linkedPatientId === patient.id)
     : patients;
 
   return (
